@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const colors = {
   damaged: "#f87171",
@@ -17,9 +17,120 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  // Preview URL for the selected / captured image
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl("");
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
+
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
+
+  // Stop the camera when the component unmounts
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
+  // Attach the stream AFTER the <video> element has mounted
+  useEffect(() => {
+    if (cameraOpen && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraOpen]);
+
+  async function openCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError("Webcam is not supported in this browser.");
+      return;
+    }
+
+    try {
+      setError("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false
+      });
+
+      streamRef.current = stream;
+      setCameraReady(false);
+      setCameraOpen(true); // the effect above attaches the stream once the video mounts
+    } catch (cameraError) {
+      setCameraOpen(false);
+      setCameraReady(false);
+      setError(
+        "Unable to access the webcam. Please allow camera permission or upload an image instead."
+      );
+      console.error(cameraError);
+    }
+  }
+
+  function closeCamera() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraOpen(false);
+    setCameraReady(false);
+  }
+
+  function capturePhoto() {
+    const video = videoRef.current;
+
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setError("Camera is not ready yet.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const context = canvas.getContext("2d");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          setError("Could not capture the webcam image.");
+          return;
+        }
+
+        const imageFile = new File([blob], `webcam-${Date.now()}.jpg`, {
+          type: "image/jpeg"
+        });
+
+        setFile(imageFile);
+        setResult(null);
+        setError("");
+        closeCamera();
+      },
+      "image/jpeg",
+      0.9
+    );
+  }
 
   async function inspect(event) {
-    event.preventDefault();
+    event?.preventDefault();
     if (!file || busy) return;
 
     setBusy(true);
@@ -66,12 +177,14 @@ export default function App() {
           </div>
 
           <p className="mt-4 max-w-2xl text-sm text-slate-300 md:text-base">
-            Upload an image to detect objects, estimate condition, and review inspection results with highlighted bounding boxes.
+            Upload an image or capture one from your webcam to detect objects,
+            estimate condition, and review inspection results with highlighted
+            bounding boxes.
           </p>
         </header>
 
         <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-xl shadow-slate-950/20 md:p-7">
-          <form onSubmit={inspect} className="flex flex-col gap-4 md:flex-row md:items-center">
+          <div className="flex flex-col gap-4 md:flex-row md:items-stretch">
             <label className="group flex w-full cursor-pointer flex-col gap-2 rounded-2xl border border-dashed border-slate-700 bg-slate-950/70 p-4 transition hover:border-sky-500 hover:bg-slate-900">
               <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
                 Upload image
@@ -85,24 +198,88 @@ export default function App() {
                 disabled={busy}
                 className="hidden"
                 onChange={(event) => {
-                  setFile(event.target.files?.[0] || null);
+                  const selected = event.target.files?.[0] || null;
+                  setFile(selected);
                   setResult(null);
                   setError("");
                 }}
               />
             </label>
 
-            <button
-              type="submit"
-              disabled={!file || busy}
-              className="inline-flex items-center justify-center rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-            >
-              {busy ? "Inspecting…" : "Inspect image"}
-            </button>
-          </form>
+            <div className="flex flex-col gap-3 sm:flex-row md:flex-col lg:flex-row">
+              <button
+                type="button"
+                onClick={cameraOpen ? closeCamera : openCamera}
+                disabled={busy}
+                className="inline-flex items-center justify-center rounded-2xl border border-sky-500/50 bg-sky-500/10 px-5 py-3 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {cameraOpen ? "Close camera" : "Use webcam"}
+              </button>
+
+              <button
+                type="button"
+                onClick={inspect}
+                disabled={!file || busy}
+                className="inline-flex items-center justify-center rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {busy ? "Inspecting…" : "Inspect image"}
+              </button>
+            </div>
+          </div>
+
+          {cameraOpen && (
+            <div className="mt-5 rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
+                  Camera preview
+                </h2>
+                <button
+                  type="button"
+                  onClick={capturePhoto}
+                  disabled={!cameraReady}
+                  className="rounded-full bg-red-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Capture photo
+                </button>
+              </div>
+
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                onLoadedMetadata={() => setCameraReady(true)}
+                className="w-full rounded-xl border border-slate-700 bg-slate-900"
+              />
+
+              {!cameraReady && (
+                <p className="mt-3 text-sm text-slate-400">Starting camera…</p>
+              )}
+            </div>
+          )}
+
+          {previewUrl && (
+            <div className="mt-5 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
+                  Selected image
+                </h2>
+                <span className="text-xs text-slate-400">{file?.name}</span>
+              </div>
+
+              <img
+                src={previewUrl}
+                alt="Selected preview"
+                className="max-h-72 w-full rounded-xl border border-slate-700 object-contain"
+              />
+            </div>
+          )}
 
           {error && (
-            <div className="mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200" role="alert">
+            <div
+              className="mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+              role="alert"
+            >
               {error}
             </div>
           )}
@@ -118,8 +295,13 @@ export default function App() {
                   ["No damage", result.counts.noVisibleDamage, "bg-emerald-500/15 text-emerald-300"],
                   ["Uncertain", result.counts.uncertain, "bg-amber-500/15 text-amber-300"]
                 ].map(([label, value, style]) => (
-                  <div key={label} className={`rounded-2xl border border-slate-700 px-3 py-2 ${style}`}>
-                    <div className="text-[10px] uppercase tracking-[0.18em] opacity-80">{label}</div>
+                  <div
+                    key={label}
+                    className={`rounded-2xl border border-slate-700 px-3 py-2 ${style}`}
+                  >
+                    <div className="text-[10px] uppercase tracking-[0.18em] opacity-80">
+                      {label}
+                    </div>
                     <div className="mt-1 text-xl font-bold">{value}</div>
                   </div>
                 ))}
@@ -172,7 +354,9 @@ export default function App() {
             </div>
 
             <aside className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-xl shadow-slate-950/20">
-              <h2 className="mb-4 text-lg font-semibold text-white">Inspection details</h2>
+              <h2 className="mb-4 text-lg font-semibold text-white">
+                Inspection details
+              </h2>
 
               <ol className="space-y-3">
                 {result.objects.map((object) => (
@@ -200,7 +384,8 @@ export default function App() {
               </ol>
 
               <p className="mt-5 text-xs leading-5 text-slate-400">
-                AI estimates only. “No visible damage” does not certify that an item is undamaged.
+                AI estimates only. “No visible damage” does not certify that an
+                item is undamaged.
               </p>
             </aside>
           </section>
